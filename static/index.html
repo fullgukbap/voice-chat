@@ -1,0 +1,140 @@
+<!DOCTYPE html>
+<html>
+<head>
+    <title>Voice Chat</title>
+</head>
+<body>
+    <button id="startButton">Start Voice Chat</button>
+    <button id="stopButton" disabled>Stop Voice Chat</button>
+
+    <script>
+        let ws = null;
+        let stream = null;
+        let audioContext = null;
+        let processor = null;
+        
+        const startButton = document.getElementById('startButton');
+        const stopButton = document.getElementById('stopButton');
+
+        async function startVoiceChat() {
+            try {
+                // WebSocket 연결 - 대소문자 수정
+                ws = new WebSocket(`ws://${window.location.host}/ws`);
+                
+                ws.onopen = async () => {
+                    console.log('WebSocket 연결됨');
+                    
+                    try {
+                        // 오디오 스트림 얻기
+                        stream = await navigator.mediaDevices.getUserMedia({
+                            audio: true,
+                            video: false
+                        });
+
+                        // 오디오 컨텍스트 설정
+                        audioContext = new AudioContext();
+                        const source = audioContext.createMediaStreamSource(stream);
+                        processor = audioContext.createScriptProcessor(2048, 1, 1);
+
+                        // 오디오 처리
+                        processor.onaudioprocess = (e) => {
+                            if (ws && ws.readyState === WebSocket.OPEN) {
+                                const inputData = e.inputBuffer.getChannelData(0);
+                                ws.send(convertFloat32ToInt16(inputData));
+                            }
+                        };
+
+                        // 오디오 노드 연결
+                        source.connect(processor);
+                        processor.connect(audioContext.destination);
+
+                        startButton.disabled = true;
+                        stopButton.disabled = false;
+                    } catch (error) {
+                        console.error('오디오 스트림 에러:', error);
+                        stopVoiceChat();
+                    }
+                };
+
+                // 수신된 오디오 처리
+                ws.onmessage = async (event) => {
+                    try {
+                        const arrayBuffer = await event.data.arrayBuffer();
+                        const audioData = new Int16Array(arrayBuffer);
+                        playAudioData(audioData);
+                    } catch (error) {
+                        console.error('오디오 재생 에러:', error);
+                    }
+                };
+
+                ws.onerror = (error) => {
+                    console.error('WebSocket 에러:', error);
+                    stopVoiceChat();
+                };
+
+                ws.onclose = () => {
+                    console.log('WebSocket 연결 종료');
+                    stopVoiceChat();
+                };
+
+            } catch (error) {
+                console.error('Voice chat 시작 에러:', error);
+                stopVoiceChat();
+            }
+        }
+
+        function stopVoiceChat() {
+            if (stream) {
+                stream.getTracks().forEach(track => track.stop());
+                stream = null;
+            }
+            if (processor) {
+                processor.disconnect();
+                processor = null;
+            }
+            if (audioContext) {
+                audioContext.close();
+                audioContext = null;
+            }
+            if (ws) {
+                if (ws.readyState === WebSocket.OPEN) {
+                    ws.close();
+                }
+                ws = null;
+            }
+
+            startButton.disabled = false;
+            stopButton.disabled = true;
+        }
+
+        function convertFloat32ToInt16(float32Array) {
+            const int16Array = new Int16Array(float32Array.length);
+            for (let i = 0; i < float32Array.length; i++) {
+                const s = Math.max(-1, Math.min(1, float32Array[i]));
+                int16Array[i] = s < 0 ? s * 0x8000 : s * 0x7FFF;
+            }
+            return int16Array;
+        }
+
+        function playAudioData(audioData) {
+            if (!audioContext) return;
+            
+            const audioBuffer = audioContext.createBuffer(1, audioData.length, audioContext.sampleRate);
+            const channelData = audioBuffer.getChannelData(0);
+            
+            // Int16 to Float32 변환
+            for (let i = 0; i < audioData.length; i++) {
+                channelData[i] = audioData[i] / 0x8000;
+            }
+
+            const source = audioContext.createBufferSource();
+            source.buffer = audioBuffer;
+            source.connect(audioContext.destination);
+            source.start();
+        }
+
+        startButton.onclick = startVoiceChat;
+        stopButton.onclick = stopVoiceChat;
+    </script>
+</body>
+</html>
